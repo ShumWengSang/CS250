@@ -11,7 +11,8 @@ namespace cs250
 {
 	static bool AlmostEqual(float a, float b)
 	{
-		return fabs(a - b) <= ((fabs(a) < fabs(b) ? fabs(b) : fabs(a)) * EPSILON);
+		return near(a, b);
+		//return fabs(a - b) <= ((fabs(a) < fabs(b) ? fabs(b) : fabs(a)) * EPSILON);
 	}
 
 	static glm::mat3 createCrossProductMatrix(const glm::vec4& v)
@@ -61,12 +62,12 @@ namespace cs250
 
 	bool isPoint(const glm::vec4& v)
 	{
-		return AlmostEqual(v.z, 1.0f);
+		return AlmostEqual(v.w, 1.0f);
 	}
 
 	bool isVector(const glm::vec4& v)
 	{
-		return AlmostEqual(v.z, 0.0f);
+		return AlmostEqual(v.w, 0.0f);
 	}
 
 	float angle(const glm::vec4& u, const glm::vec4& v)
@@ -86,17 +87,7 @@ namespace cs250
 
 	glm::mat4 affine(const glm::vec4& Lx, const glm::vec4& Ly, const glm::vec4& Lz, const glm::vec4& C)
 	{
-		glm::mat4 result = glm::mat4(1);
-
-		const glm::vec4* arr[] = { &Lx, &Ly, &Lz, &C };
-
-		for (int j = 0; j < 4; j++)
-		{
-			for (int i = 0; i < 4; ++i)
-			{
-				result[j][i] = (*arr[j])[i];
-			}
-		}
+		glm::mat4 result = { Lx, Ly, Lz, C };
 
 		return result;
 	}
