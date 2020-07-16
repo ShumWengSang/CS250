@@ -1,248 +1,234 @@
-// Jonathan Bourim  |  CS250 Assignment 7  |  03/27/2020
+// CS250
+// Shum Weng Sang
+// Assignment 7
 
-#include "PhongRender.h"
 #include <iostream>
 #include <fstream>
-#include <sstream>
+#include <string>
+#include <vector>
+#include "PhongRender.h"
 
 namespace cs250
 {
-
 	PhongRender::PhongRender(void)
 	{
-		// Get files locally
-		std::ifstream fragFile("./phong.frag");
-		std::ifstream vertFile("./phong.vert");
-		std::stringstream fragStream, vertStream;
-		std::string fragSrc, vertSrc;
-		
-		if (!fragFile)
-		{
-			std::string msg = "Cannot open fragment shader file";
-			throw msg.c_str();
-		}
+        // compile fragment & vertex shaders
+        GLuint shader[2];
+        GLenum type[2] = { GL_FRAGMENT_SHADER, GL_VERTEX_SHADER };
+        const char* fname[2] = { "PhongRender.frag", "PhongRender.vert" };
+        GLint value;
+        for (int i = 0; i < 2; ++i) {
 
-		// Dump file to string stream
-		fragStream << fragFile.rdbuf();
-		fragFile.close();
+            // load text file
+            std::string shader_text;
+            std::ifstream in(fname[i]);
+            while (in) {
+                std::string line;
+                std::getline(in, line);
+                shader_text += line + "\n";
+            }
 
-		if (!vertFile)
-		{
-			std::string msg = "Cannot open vertex shader file";
-			throw msg.c_str();
-		}
-		
-		vertStream << vertFile.rdbuf();
-		vertFile.close();
+            // compile shader
+            shader[i] = glCreateShader(type[i]);
+            const char* text = shader_text.c_str();
+            glShaderSource(shader[i], 1, &text, 0);
+            glCompileShader(shader[i]);
 
-		fragSrc = fragStream.str();
-		vertSrc = vertStream.str();
-		// Create src const char pointers
-		const char * frag = fragSrc.c_str();
-		const char * vert = vertSrc.c_str();
-	
-		// Compile fragment shader
-		GLuint fshader = glCreateShader(GL_FRAGMENT_SHADER);
-		glShaderSource(fshader, 1, &frag, 0);
-		glCompileShader(fshader);
+            // failure check
+            glGetShaderiv(shader[i], GL_COMPILE_STATUS, &value);
+            if (!value) {
+                std::string msg = "error in file ";
+                msg += fname[i];
+                msg += "\n";
+                char buffer[1024];
+                glGetShaderInfoLog(shader[i], 1024, 0, buffer);
+                msg += buffer;
+                std::cout << msg << std::endl;
+            }
+        }
 
-		GLint value;
-		glGetShaderiv(fshader, GL_COMPILE_STATUS, &value);
-		if (!value) {
-			std::string msg = "fragment shader error:\n";
-			char buffer[1024];
-			glGetShaderInfoLog(fshader, 1024, 0, buffer);
-			msg += buffer;
+        // link shader program
+        program = glCreateProgram();
+        glAttachShader(program, shader[0]);
+        glAttachShader(program, shader[1]);
+        glLinkProgram(program);
+        glGetProgramiv(program, GL_LINK_STATUS, &value);
+        if (!value) {
+            std::string msg = "failed to link:\n";
+            char buffer[1024];
+            glGetProgramInfoLog(program, 1024, 0, buffer);
+            msg += buffer;
+            std::cout << msg << std::endl;
+        }
+        glDeleteShader(shader[0]);
+        glDeleteShader(shader[1]);
 
-			throw msg.c_str();
-		}
+        // turn on depth buffer
+        glEnable(GL_DEPTH_TEST);
 
-		// Compile vertex shader
-		GLuint vshader = glCreateShader(GL_VERTEX_SHADER);
-		glShaderSource(vshader, 1, &vert, 0);
-		glCompileShader(vshader);
+        // shader uniform variable locations
+        upersp_matrix = glGetUniformLocation(program, "persp_matrix");
+        uview_matrix = glGetUniformLocation(program, "view_matrix");
+        umodel_matrix = glGetUniformLocation(program, "model_matrix");
+        unormal_matrix = glGetUniformLocation(program, "normal_matrix");
 
-		glGetShaderiv(vshader, GL_COMPILE_STATUS, &value);
-		if (!value) {
-			std::string msg = "vertex shader error:\n";
-			char buffer[1024];
-			glGetShaderInfoLog(vshader, 1024, 0, buffer);
-			msg += buffer;
+        ulight_position = glGetUniformLocation(program, "light_position");
+        ueye_position = glGetUniformLocation(program, "eye_position");
+        ulight_color = glGetUniformLocation(program, "light_color");
+        udiffuse_coefficient = glGetUniformLocation(program, "diffuse_coefficient");
+        uspecular_coefficient = glGetUniformLocation(program, "specular_coefficient");
+        uspecular_exponent = glGetUniformLocation(program, "specular_exponent");
+        uambient_color = glGetUniformLocation(program, "ambient_color");
+        ulight_use = glGetUniformLocation(program, "light_use");
 
-			throw msg.c_str();
-		}
-
-		// link shader program
-		program = glCreateProgram();
-		glAttachShader(program, fshader);
-		glAttachShader(program, vshader);
-		glLinkProgram(program);
-		glGetProgramiv(program, GL_LINK_STATUS, &value);
-		if (!value) {
-			std::string msg = "failed to link:\n";
-			char buffer[1024];
-			glGetProgramInfoLog(program, 1024, 0, buffer);
-			msg += buffer;
-
-			throw msg.c_str();
-		}
-		glDeleteShader(vshader);
-		glDeleteShader(fshader);
-
-		// turn on depth buffer
-		glEnable(GL_DEPTH_TEST);
-
-		// shader parameter locations
-		upersp_matrix = glGetUniformLocation(program, "persp_matrix");
-		uview_matrix = glGetUniformLocation(program, "view_matrix");
-		umodel_matrix = glGetUniformLocation(program, "model_matrix");
-		unormal_matrix = glGetUniformLocation(program, "normal_matrix");
-		uambient_color = glGetUniformLocation(program, "ambient_color");
-		ueye_position = glGetUniformLocation(program, "eye_position");
-		udiffuse_coefficient = glGetUniformLocation(program, "diffuse_coefficient");
-		uspecular_coefficient = glGetUniformLocation(program, "specular_coefficient");
-		uspecular_exponent = glGetUniformLocation(program, "specular_exponent");
-		ulight_position = glGetUniformLocation(program, "light_position");
-		ulight_color = glGetUniformLocation(program, "light_color");
-		ulight_use = glGetUniformLocation(program, "light_use");
+        // Initialize use light arr to 0.
+        glUseProgram(program);
+        int array[8] = { 0 };
+        glUniform1iv(ulight_use, 8, array);
 	}
 
 	PhongRender::~PhongRender(void)
 	{
-		glDeleteProgram(program);
+        glUseProgram(0);
+        glDeleteProgram(program);
+	}
+
+	void PhongRender::backfaceCull(bool yes)
+	{
+        if (yes)
+            glEnable(GL_CULL_FACE);
+        else
+            glDisable(GL_CULL_FACE);
 	}
 
 	void PhongRender::clear(const glm::vec4& color)
 	{
-		glClearColor(color.x, color.y, color.z, color.w);
-		glClearDepth(1.0f);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClearColor(color.r, color.g, color.b, color.a);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glClearDepth(1);
 	}
 
-	int PhongRender::loadMesh(const NormalMesh& m)
+	int PhongRender::loadMesh(const cs250::NormalMesh& m)
 	{
-		MeshData* mesh = nullptr;
-		// Check if reuseable mesh exists
-		for (auto & it : mesh_data)
-		{
-			if (it.face_count == 0)
-			{
-				mesh = &it;
-			}
-		}
-		if (!mesh)
-		{
-			mesh_data.emplace_back();
-			mesh = &mesh_data.back();
-		}
+        glUseProgram(program);
+        MeshData newMeshData;
+        GLuint& vertex_buffer = newMeshData.buffer_objects[static_cast<int>(MeshData::VERT)];
+        GLuint& normal_buffer = newMeshData.buffer_objects[static_cast<int>(MeshData::NORM)];
+        GLuint& face_buffer = newMeshData.buffer_objects[static_cast<int>(MeshData::FACE)];
+        GLuint& vao = newMeshData.vertex_array_buffer;
 
-		// Load Mesh
-		glGenBuffers(1, &mesh->buffer_objects[MeshData::VERT]);
-		glBindBuffer(GL_ARRAY_BUFFER, mesh->buffer_objects[MeshData::VERT]);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec4) * m.vertexCount(),
-			m.vertexArray(), GL_STATIC_DRAW);
+        // load sphere mesh (solid frame only)
+        glGenBuffers(1, &vertex_buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec4) * m.vertexCount(),
+            m.vertexArray(), GL_STATIC_DRAW);
 
-		glGenBuffers(1, &mesh->buffer_objects[MeshData::NORM]);
-		glBindBuffer(GL_ARRAY_BUFFER, mesh->buffer_objects[MeshData::NORM]);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec4) * m.vertexCount(),
-			m.normalArray(), GL_STATIC_DRAW);
+        glGenBuffers(1, &normal_buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, normal_buffer);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec4) * m.vertexCount(),
+            m.normalArray(), GL_STATIC_DRAW);
 
-		mesh->face_count = m.faceCount();
+        glGenBuffers(1, &face_buffer);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, face_buffer);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+            sizeof(cs250::Mesh::Face) * m.faceCount(),
+            m.faceArray(), GL_STATIC_DRAW);
 
-		glGenBuffers(1, &mesh->buffer_objects[MeshData::FACE]);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh->buffer_objects[MeshData::FACE]);
-		glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-			sizeof(cs250::Mesh::Face) * mesh->face_count,
-			m.faceArray(), GL_STATIC_DRAW);
+        // VAO
+        GLint aposition = glGetAttribLocation(program, "position"),
+            anormal = glGetAttribLocation(program, "normal");
+        glGenVertexArrays(1, &vao);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+        glVertexAttribPointer(aposition, 4, GL_FLOAT, false, 0, 0);
+        glEnableVertexAttribArray(aposition);
 
-		// Get attribs and set/enable
-		GLint aposition = glGetAttribLocation(program, "position"),
-			anormal = glGetAttribLocation(program, "normal");
-		glGenVertexArrays(1, &mesh->vertex_array_buffer);
-		glBindVertexArray(mesh->vertex_array_buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, normal_buffer);
+        glVertexAttribPointer(anormal, 4, GL_FLOAT, false, 0, 0);
+        glEnableVertexAttribArray(anormal);
 
-		glBindBuffer(GL_ARRAY_BUFFER, mesh->buffer_objects[MeshData::VERT]);
-		glVertexAttribPointer(aposition, 4, GL_FLOAT, false, 0, 0);
-		glEnableVertexAttribArray(aposition);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, face_buffer);
+        glBindVertexArray(0);
 
-		glBindBuffer(GL_ARRAY_BUFFER, mesh->buffer_objects[MeshData::NORM]);
-		glVertexAttribPointer(anormal, 4, GL_FLOAT, false, 0, 0);
-		glEnableVertexAttribArray(anormal);
+        newMeshData.face_count = m.faceCount();
+        mesh_data.push_back(newMeshData);
 
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh->buffer_objects[MeshData::FACE]);
-		glBindVertexArray(0);
-
-		// Return index
-		return (mesh_data.size() - 1);
+		return mesh_data.size() - 1;
 	}
 
 	void PhongRender::unloadMesh(int mi)
 	{
-		// Unload mesh at mi
-		MeshData & mesh = mesh_data[mi];
+        glUseProgram(program);
+        MeshData& newMeshData = mesh_data[mi];
+        GLuint& vertex_buffer = newMeshData.buffer_objects[static_cast<int>(MeshData::VERT)];
+        GLuint& normal_buffer = newMeshData.buffer_objects[static_cast<int>(MeshData::NORM)];
+        GLuint& face_buffer = newMeshData.buffer_objects[static_cast<int>(MeshData::FACE)];
+        GLuint& vao = newMeshData.vertex_array_buffer;
 
-		glDeleteVertexArrays(1, &mesh.vertex_array_buffer);
-		glDeleteBuffers(3, mesh.buffer_objects);	
-		mesh.face_count = 0;
+        glDeleteBuffers(1, &normal_buffer);
+        glDeleteBuffers(1, &vertex_buffer);
+        glDeleteBuffers(1, &face_buffer);
+        glDeleteVertexArrays(1, &vao);
+
+        newMeshData.face_count = 0;
 	}
-
 
 	void PhongRender::setModel(const glm::mat4& M)
 	{
-		glUseProgram(program);
-
-		glUniformMatrix4fv(umodel_matrix, 1, GL_FALSE, &M[0][0]);
-
-		// Get inverse transpose of the linear portion of the model matrix
-		glm::mat4 normalMatrix = affineInverse(glm::transpose(M));
-		glUniformMatrix4fv(unormal_matrix, 1, GL_FALSE, &normalMatrix[0][0]);
+        glUseProgram(program);
+        glm::mat4 inverse = glm::transpose(affineInverse(M));
+        glUniformMatrix4fv(umodel_matrix, 1, false, &M[0][0]);
+        glUniformMatrix4fv(unormal_matrix, 1, false, &inverse[0][0]);
 	}
 
-	void PhongRender::setCamera(const Camera& cam)
+	void PhongRender::setCamera(const cs250::Camera& cam)
 	{
-		glUseProgram(program);
-	
-		// Persp, view and eye pos
-		glUniformMatrix4fv(upersp_matrix, 1, GL_FALSE, &perspective(cam)[0][0]);
-		glUniformMatrix4fv(uview_matrix, 1, GL_FALSE, &view(cam)[0][0]);
-		glUniform4fv(ueye_position, 1, &cam.eye()[0]);
+        glUseProgram(program);
+        glm::mat4x4 perspectiveMatrix = perspective(cam);
+        glm::mat4x4 viewMatrix = view(cam); 
+        glm::vec4 eyePos = cam.eye();
+        glUniformMatrix4fv(upersp_matrix, 1, false, &perspectiveMatrix[0][0]);
+        glUniformMatrix4fv(uview_matrix, 1, false, &viewMatrix[0][0]);
+
+        glUniform4fv(ueye_position, 1, &eyePos[0]);
 	}
 
 	void PhongRender::setMaterial(const glm::vec3& diff_coef, const glm::vec3& spec_coef, float spec_exp)
 	{
-		glUseProgram(program);
-
-		// Diffuse coeff, specular coeff, and spec exp
-		glUniform3fv(udiffuse_coefficient, 1, &diff_coef[0]);
-		glUniform3fv(uspecular_coefficient, 1, &spec_coef[0]);
-		glUniform1f(uspecular_exponent, spec_exp);
+        glUseProgram(program);
+        glUniform3fv(udiffuse_coefficient, 1, &diff_coef[0]);
+        glUniform3fv(uspecular_coefficient, 1, &spec_coef[0]);
+        glUniform1f(uspecular_exponent, spec_exp);
 	}
 
 	void PhongRender::setLight(int li, const glm::vec4& position, const glm::vec3& color)
 	{
-		glUseProgram(program);
-
-		// Light at index li
-		glUniform4fv(ulight_position + li, 1, &position[0]);
-		glUniform3fv(ulight_color + li , 1, &color[0]);
-		glUniform1i(ulight_use + li, 1);
+        if (li < 0 || li >= 8)
+            return;
+        glUseProgram(program); 
+        // Set the light position
+        glUniform4fv(ulight_position + li, 1, &position[0]);
+        // Set the light color
+        glUniform3fv(ulight_color + li, 1, &color[0]);
+        // Turn light on
+        glUniform1i(ulight_use + li, 1);
 	}
 
 	void PhongRender::setAmbient(const glm::vec3& color)
 	{
-		glUseProgram(program);
-		glUniform3fv(uambient_color, 1, &color[0]);
+        glUseProgram(program);
+        glUniform3fv(uambient_color, 1, &color[0]);
 	}
 
 	void PhongRender::draw(int mi)
 	{
-		glUseProgram(program);
-		MeshData& mesh = mesh_data[mi];
-
-		glBindVertexArray(mesh.vertex_array_buffer);
-		glDrawElements(GL_TRIANGLES, 3 * mesh.face_count, GL_UNSIGNED_INT, 0);
-		glBindVertexArray(0);
+        glUseProgram(program);
+        if (mesh_data[mi].face_count != 0)
+        {
+            // Draw the object
+            glBindVertexArray(mesh_data[mi].vertex_array_buffer);
+            glDrawElements(GL_TRIANGLES, 3 * mesh_data[mi].face_count, GL_UNSIGNED_INT, 0);
+            glBindVertexArray(0);
+        }
 	}
-
-
 }

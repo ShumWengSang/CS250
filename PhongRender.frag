@@ -32,7 +32,7 @@ void main(void)
         vec4 L = normalize(light_position[i] - world_position);
         vec4 R = normalize(2 * (dot(M, L)) * M - L);
 
-        vec3 diffuse = diffuse_coefficient * max(dot(L,world_normal),0.0);
+        vec3 diffuse = diffuse_coefficient * max(dot(L,M),0.0);
         diffuse *= light_color[i];
         totalDiffuse += diffuse;
 
@@ -43,5 +43,5 @@ void main(void)
   }
   frag_color = vec4(world_normal.w);
   // ambient + diffuse + specular
-  frag_color = vec4(ambient + totalSpecular, 1.0);
+  frag_color = vec4(ambient + totalDiffuse + totalSpecular, 1.0);
 };
