@@ -8,6 +8,108 @@
 
 namespace cs250
 {
+    //will represent a vertex transformed into NDC containing the following fields
+    class VertexNDC
+    {
+    public:
+        glm::vec4 Position; // in NDC coordinates
+        glm::vec3 Normal; // in world coordinates
+        glm::vec3 World; // position in world coordinates
+
+        static VertexNDC Interpolate(float t, VertexNDC a, VertexNDC b);
+    };
+
+    class VertexPIX
+    {
+    public:
+        glm::vec3 Position; // x and y in pixel coordinates, z left in NDC coordinates
+        glm::vec3 Normal; // in world coordinates
+        glm::vec3 World; // position in world coordinates
+        float w; // Homogeneous coordinate needed for perspective correct interpolation.
+
+        static VertexPIX Interpolate(float t, VertexPIX a, VertexPIX b);
+    };
+
+    VertexPIX Project(VertexNDC);
+
+    VertexNDC VertexNDC::Interpolate(float t, VertexNDC a, VertexNDC b)
+    {
+        VertexNDC result;
+
+        result.Position = a.Position + t * (b.Position - a.Position);
+        result.Normal = a.Normal + t * (b.Normal - a.Normal);
+        result.World = a.World + t * (b.World - a.World);
+        return result;
+    }
+
+    VertexPIX VertexPIX::Interpolate(float t, VertexPIX a, VertexPIX b)
+    {
+        VertexPIX result;
+        result.Position = a.Position + t * (b.Position - a.Position);
+        const float s = t * a.w / (t * a.w + (1 - t) * b.w); // the perspective correction term
+        result.Normal = a.Normal + s * (b.Normal - a.Normal);
+        result.World = a.World + s * (b.World - a.World);
+        result.w = a.w + s * (b.w - a.w);
+        return result;
+    }
+
+    VertexPIX Project(VertexNDC a)
+    {
+        VertexPIX res;
+
+        res.Position = glm::vec3(a.Position) / a.Position.w;
+        res.w = a.Position.w;
+
+        res.Normal = a.Normal;
+        res.World = res.World;
+
+        return res;
+    }
+
+    std::vector<VertexNDC> PolyClip(std::vector<VertexNDC> const& input, glm::vec4 plane)
+    {
+        std::vector<VertexNDC> output;
+        output.reserve(8);
+
+        if (input.empty())
+            return output;
+
+        VertexNDC const* S = &input.back();
+
+        for (int i = 0; i < input.size(); ++i)
+        {
+            VertexNDC const& T = input[i];
+
+            float d0 = glm::dot(plane, (*S).Position);
+            float d1 = glm::dot(plane, T.Position);
+
+            if (d0 > 0 && d1 > 0)
+            {
+                output.emplace_back(T);
+            }
+            else if (d0 > 0)
+            {
+                float t = d0 / (d0 - d1);
+                VertexNDC I = VertexNDC::Interpolate(t, *S, T);
+                output.emplace_back(I);
+            }
+            else if (d1 > 0)
+            {
+                float t = d0 / (d0 - d1);
+                VertexNDC I = VertexNDC::Interpolate(t, *S, T);
+                output.emplace_back(I);
+                output.emplace_back(T);
+            }
+            S = &T;
+        }
+        return output;
+    }
+
+    void DepthTestandColor(VertexPIX const& coord, DiffuseRenderSoft& render)
+    {
+
+    }
+
     DiffuseRenderSoft::DiffuseRenderSoft(cs250::Raster &r) : raster(r)
     {
         device_matrix = cs250::translate(cs250::vector(-0.5f, -0.5f, 0))
@@ -30,6 +132,18 @@ namespace cs250
                 raster.incrementX();
             }
         }
+    }
+
+    auto Interpolate_y(float y, VertexPIX const& a, VertexPIX const& b)
+    {
+        float t = (y - a.Position.y) / (b.Position.y - a.Position.y);
+        return VertexPIX::Interpolate(t, a, b);
+    }
+
+    auto Interpolate_x(float x, VertexPIX const& a, VertexPIX const& b)
+    {
+        float t = (x - a.Position.x) / (b.Position.x - a.Position.x);
+        return VertexPIX::Interpolate(t, a, b);
     }
     
     void DiffuseRenderSoft::setModel(const glm::mat4 &M)
@@ -62,121 +176,144 @@ namespace cs250
     
     void DiffuseRenderSoft::draw(void)
     {
-        clip_verts.clear();
-        device_verts.clear();
-        world_normals.clear();
-        glm::mat4x4 mat = perspective_matrix * view_matrix * model_matrix;
-        for(int i = 0; i < mesh->vertexCount(); ++i)
-        {
-            const glm::vec4 &position = mesh->vertexArray()[i];
-            const glm::vec4 &normal = mesh->normalArray()[i];
-            glm::vec4 gl_Position = mat * position;
-            glm::vec4 Pdev = device_matrix * gl_Position;
-            clip_verts.push_back(Pdev);
-            device_verts.push_back(Pdev / Pdev.w);
-            
-            world_normals.push_back(normal_matrix * normal);
-        }
+        int width = raster.width();
+        int height = raster.height();
+
+        // The viewing transformations
+        glm::mat4 WorldInverse = glm::inverse(view_matrix);
+        glm::mat3 NormalMatrix = glm::transpose(glm::mat3(glm::inverse(model_matrix)));
+
+        // The arrays of vertices, normals, texture coordinates, ...
+        glm::vec4 const * Pnt = mesh->vertexArray();
+        glm::vec4 const* Nrm = mesh->normalArray();
         
-        // Process triangles
-        for(int n = 0; n < mesh->faceCount(); ++n)
+
+        // The "tri" input to this procedure describes a single
+        // triangle as three indices into the above arrays. Continue from
+        // here with code to transform, clip, scan-convert, depth test,
+        // and light this single triangle.
+
+        // Asssuming triangles, the vectors for points are all size() == 3
+
+        // FOR EACH TRIANGLE/FACE, do the rendering
+        for (int k = 0; k < mesh->faceCount(); ++k)
         {
-            const cs250::Mesh::Face &f = mesh->faceArray()[n];
-            const glm::vec4 &PClip = clip_verts[f.index1],
-                            &QClip = clip_verts[f.index2],
-                            &RClip = clip_verts[f.index3],
-                            &Pdev = device_verts[f.index1],
-                            &Qdev = device_verts[f.index2],
-                            &Rdev = device_verts[f.index3],
-                            &mP = world_normals[f.index1],
-                            &mQ = world_normals[f.index2],
-                            &mR = world_normals[f.index3];
-                            
-            // rejection test
-            if(PClip.w <= 0 || QClip.w <= 0 || RClip.w <= 0)
-                continue;
-            
-            int xmin = std::ceil(std::min(Pdev.x, std::min(Qdev.x, Rdev.x)));
-            int ymin = std::ceil(std::min(Pdev.y, std::min(Qdev.y, Rdev.y)));
-            int xmax = std::floor(std::max(Pdev.x, std::max(Qdev.x, Rdev.x)));
-            int ymax = std::floor(std::max(Pdev.y, std::max(Qdev.y, Rdev.y)));
-            
-            
-            // Clip to framebuffer
-            xmin = std::max(xmin, 0);
-            ymin = std::max(ymin, 0);
-            xmax = std::min(xmax, raster.width() - 1);
-            ymax = std::min(ymax, raster.height() - 1);
-            
+            cs250::Mesh::Face const& tri = mesh->faceArray()[k];
+            // TRANSFORM
+            std::vector<VertexNDC> transform;
+            transform.reserve(3);
 
-            
-            // Find barycentric coordinates planar
-            glm::vec4 Pu = cs250::point(Pdev.x, Pdev.y, 0);
-            glm::vec4 Qu = cs250::point(Qdev.x, Qdev.y, 0);
-            glm::vec4 Ru = cs250::point(Rdev.x, Rdev.y, 0);
-            glm::vec4 u = cs250::cross(Qu - Pu, Ru - Pu);
-            float du = glm::dot(u, Pu); 
-            glm::vec3 u_fn(-u.x/ u.z, -u.y / u.z, du / u.z);
-            
-            glm::vec4 Pv = cs250::point(Pdev.x, Pdev.y, 0);
-            glm::vec4 Qv = cs250::point(Qdev.x, Qdev.y, 0);
-            glm::vec4 Rv = cs250::point(Rdev.x, Rdev.y, 0);
-            glm::vec4 v = cs250::cross(Qv - Pv, Rv - Pv);
-            float dv = glm::dot(v, Pv); 
-            glm::vec3 v_fn(-v.x/ v.z, -v.y / v.z, dv / v.z);
-            
-            glm::mat2x2 inverseMatrix(1);
-            inverseMatrix[0] = Qu - Pu;
-            inverseMatrix[1] = Ru - Pu;
-            inverseMatrix = glm::inverse(inverseMatrix);
-
-            
-            raster.gotoPoint(xmin,ymin);
-            for(int i = ymin; i <= ymax; ++i)
+            for (int i = 0; i < 3; ++i)
             {
-                //raster.incrementY();
-                for(int j = xmin; j <= xmax; ++j)
+                // Lazy haha
+                const int index = reinterpret_cast<const int*>(&tri)[i];
+                glm::vec4 const& ptr = Pnt[index];
+                VertexNDC temp = { perspective_matrix * view_matrix * model_matrix * ptr , NormalMatrix * Nrm[index], (NormalMatrix * ptr) };
+                transform.emplace_back(temp);
+            }
+
+            // CLIP using cohen sutherland 
+            std::vector<VertexNDC> a = PolyClip(transform, { 1,0,0,1 });
+            std::vector<VertexNDC> b = PolyClip(a, { -1,0,0,1 });
+            std::vector<VertexNDC> c = PolyClip(b, { 0,-1,0,1 });
+            std::vector<VertexNDC> d = PolyClip(c, { 0,1,0,1 });
+            std::vector<VertexNDC> e = PolyClip(d, { 0,0,1,1 });
+            std::vector<VertexNDC> f = PolyClip(e, { 0,0,-1,1 });
+            //Clip(transform);
+            // TRANSFORM
+            std::vector<VertexPIX> transformed;
+            transformed.reserve(f.size());
+
+            for (int i = 0; i < f.size(); ++i)
+            {
+                // Project by doing /w
+                VertexPIX temp = { (glm::vec3)(f[i].Position) / f[i].Position.w , f[i].Normal, f[i].World, f[i].Position.w };
+                temp.Position.x = width * (temp.Position.x + 1) / 2;
+                temp.Position.y = height * (temp.Position.y + 1) / 2;
+                transformed.emplace_back(temp);
+            }
+
+            // TRIANGULATE AND DO THINGS
+            for (int i = 2; i < transformed.size(); ++i)
+            {
+                VertexPIX const& s0 = transformed.at(0);
+                VertexPIX const& s1 = transformed.at(i - 1);
+                VertexPIX const& s2 = transformed.at(i);
+
+                // Reorder points
+                auto cmp = [](VertexPIX a, VertexPIX b) { return a.Position.y < b.Position.y; };
+                VertexPIX s[3] = { s0, s1, s2 };
+                std::sort(s, s + 3, cmp);
+
+                if (s[0].Position.y != s[1].Position.y)
                 {
-                    // Compute barycentric coordinates
-                    glm::vec2 I(j, i);
-                    I = I - glm::vec2(Pu);
-                    // Check if within barycentric coordinates
-                    //float Iu = glm::dot(u_fn, I);
-                    //float Iv = glm::dot(v_fn, I);   
-                    //float Il = 1 - Iu - Iv;
-                    glm::vec2 resultantBarycentric = inverseMatrix * I;
-                    float Iu = resultantBarycentric[0];
-                    float Iv = resultantBarycentric[1];
-                    float Il = 1 - Iu - Iv;
-                    
-                    raster.gotoPoint(j, i);
-                    // Test if pixel is in triangle
-                    if(Il >= 0 && Iu >= 0 && Iv == 0)
+                    for (float y = std::ceil(s[0].Position.y); y <= std::ceil(s[1].Position.y - 1); ++y)
                     {
-                        float z = Il * Pdev.z + Iv * Qdev.z + Iu * Rdev.z;
-                        if(z < raster.getZ())
+                        VertexPIX e0 = Interpolate_y(y, s[0], s[1]);
+                        VertexPIX e1 = Interpolate_y(y, s[0], s[2]);
+
+                        if (e0.Position.x > e1.Position.x)
                         {
-                            // Interpolate world normal, perspective divide
-                            glm::vec3 warpedBary(Il / PClip.w, Iu / QClip.w,Iv / RClip.w);
-                            float D = warpedBary.x + warpedBary.y + warpedBary.z;
-                            warpedBary /= D;
-                            
-                            glm::vec4 m = warpedBary.x * mP + warpedBary.y * mQ + warpedBary.z * mR;
-                            m = glm::normalize(m);
-                            glm::vec4 pos = warpedBary.x * j + warpedBary.y * i + warpedBary.z * mR;
-                            
-                            float mL = glm::dot(light_direction, m);
-                            glm::vec3 color = (ambient_color) + std::max(0.0f, mL) * (diffuse_coefficient) * (light_color);
+                            std::swap(e0, e1);
+                        }
+
+                        for (float x = std::ceil(e0.Position.x); x <= std::ceil(e1.Position.x - 1); ++x)
+                        {
+                            VertexPIX ep = Interpolate_x(x, e0, e1);
+
+                            // Compare depth
+                            raster.gotoPoint(ep.Position.x, ep.Position.y);
+                            if (ep.Position.z > raster.getZ())
+                            {
+                                // Pixel is discarded.
+                                continue;
+                            }
+                            float mL = glm::dot(glm::vec3(light_direction), glm::normalize(ep.Normal));
+                            glm::vec3 color = (ambient_color)+std::max(0.0f, mL) * (diffuse_coefficient) * (light_color);
                             color *= 255.0f;
                             //if(glm::dot(m,m) < 1e-3f)
                               ////  color = glm::vec3(0,0,0);
-                            
+
                             raster.setColor(color.x, color.y, color.z);
-                            raster.writeZ(z);
+                            raster.writeZ(ep.Position.z);
                             raster.writePixel();
                         }
                     }
-                    raster.incrementX();
+                }
+
+                if (s[1].Position.y != s[2].Position.y)
+                {
+                    // @@ Check this with Prof
+                    for (float y = std::ceil(s[1].Position.y); y <= std::ceil(s[2].Position.y - 1); ++y)
+                    {
+                        VertexPIX e0 = Interpolate_y(y, s[1], s[2]);
+                        VertexPIX e1 = Interpolate_y(y, s[0], s[2]);
+
+                        if (e0.Position.x > e1.Position.x)
+                        {
+                            std::swap(e0, e1);
+                        }
+
+                        for (float x = std::ceil(e0.Position.x); x <= std::ceil(e1.Position.x - 1); ++x)
+                        {
+                            VertexPIX ep = Interpolate_x(x, e0, e1);
+                            raster.gotoPoint(ep.Position.x, ep.Position.y);
+                            if (ep.Position.z > raster.getZ())
+                            {
+                                // Pixel is discarded.
+                                continue;
+                            }
+                            float mL = glm::dot(glm::vec3(light_direction), glm::normalize(ep.Normal));
+                            glm::vec3 color = (ambient_color)+std::max(0.0f, mL) * (diffuse_coefficient) * (light_color);
+                            color *= 255.0f;
+                            //if(glm::dot(m,m) < 1e-3f)
+                              ////  color = glm::vec3(0,0,0);
+
+                            raster.setColor(color.x, color.y, color.z);
+                            raster.writeZ(ep.Position.z);
+                            raster.writePixel();
+                        }
+                    }
                 }
             }
         }
