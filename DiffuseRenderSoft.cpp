@@ -46,7 +46,7 @@ namespace cs250
     
     void DiffuseRenderSoft::setDiffuseCoefficient(const glm::vec3 &k)
     {
-        diffuse_coefficient = k;
+        diffuse_coefficient = k ;
     }
     
     void DiffuseRenderSoft::setLight(const glm::vec4 &L, const glm::vec3 &c)
@@ -72,9 +72,11 @@ namespace cs250
             const glm::vec4 &normal = mesh->normalArray()[i];
             glm::vec4 gl_Position = mat * position;
             glm::vec4 Pdev = device_matrix * gl_Position;
+            // Clip coordinates
             clip_verts.push_back(Pdev);
+            // Device coordinates
             device_verts.push_back(Pdev / Pdev.w);
-            
+            // Normals
             world_normals.push_back(normal_matrix * normal);
         }
         
@@ -92,15 +94,15 @@ namespace cs250
                             &mQ = world_normals[f.index2],
                             &mR = world_normals[f.index3];
                             
-            // rejection test
+            // camera cull rejection test, reject if behind camera
             if(PClip.w <= 0 || QClip.w <= 0 || RClip.w <= 0)
                 continue;
             
+
             int xmin = std::ceil(std::min(Pdev.x, std::min(Qdev.x, Rdev.x)));
             int ymin = std::ceil(std::min(Pdev.y, std::min(Qdev.y, Rdev.y)));
             int xmax = std::floor(std::max(Pdev.x, std::max(Qdev.x, Rdev.x)));
             int ymax = std::floor(std::max(Pdev.y, std::max(Qdev.y, Rdev.y)));
-            
             
             // Clip to framebuffer
             xmin = std::max(xmin, 0);
@@ -111,66 +113,59 @@ namespace cs250
 
             
             // Find barycentric coordinates planar
-            glm::vec4 Pu = cs250::point(Pdev.x, Pdev.y, 0);
-            glm::vec4 Qu = cs250::point(Qdev.x, Qdev.y, 0);
-            glm::vec4 Ru = cs250::point(Rdev.x, Rdev.y, 0);
-            glm::vec4 u = cs250::cross(Qu - Pu, Ru - Pu);
-            float du = glm::dot(u, Pu); 
-            glm::vec3 u_fn(-u.x/ u.z, -u.y / u.z, du / u.z);
+            glm::vec4 O = cs250::point(0, 0, 0);
+            glm::vec4 Pmu = cs250::point(Pdev.x, Pdev.y, 0);
+            glm::vec4 Qmu = cs250::point(Qdev.x, Qdev.y, 1);
+            glm::vec4 Rmu = cs250::point(Rdev.x, Rdev.y, 0);
+            glm::vec4 mmu = cs250::cross(Qmu - Pmu, Rmu - Pmu);
+            float dmu = glm::dot(mmu, Qmu - O); 
+            glm::vec3 mu_fcn(-mmu.x, -mmu.y, dmu);
+            mu_fcn /= mmu.z;
             
-            glm::vec4 Pv = cs250::point(Pdev.x, Pdev.y, 0);
-            glm::vec4 Qv = cs250::point(Qdev.x, Qdev.y, 0);
-            glm::vec4 Rv = cs250::point(Rdev.x, Rdev.y, 0);
-            glm::vec4 v = cs250::cross(Qv - Pv, Rv - Pv);
-            float dv = glm::dot(v, Pv); 
-            glm::vec3 v_fn(-v.x/ v.z, -v.y / v.z, dv / v.z);
-            
-            glm::mat2x2 inverseMatrix(1);
-            inverseMatrix[0] = Qu - Pu;
-            inverseMatrix[1] = Ru - Pu;
-            inverseMatrix = glm::inverse(inverseMatrix);
+            glm::vec4 Pnu = cs250::point(Pdev.x, Pdev.y, 0);
+            glm::vec4 Qnu = cs250::point(Qdev.x, Qdev.y, 0);
+            glm::vec4 Rnu = cs250::point(Rdev.x, Rdev.y, 1);
+            glm::vec4 mnu = cs250::cross(Qnu - Pnu, Rnu - Pnu);
+            float dnu = glm::dot(mnu, Qnu - O);
+            glm::vec3 nu_fcn(-mnu.x, -mnu.y , dnu);
+            nu_fcn /= mnu.z;
 
             
-            raster.gotoPoint(xmin,ymin);
             for(int i = ymin; i <= ymax; ++i)
             {
                 //raster.incrementY();
                 for(int j = xmin; j <= xmax; ++j)
                 {
                     // Compute barycentric coordinates
-                    glm::vec2 I(j, i);
-                    I = I - glm::vec2(Pu);
-                    // Check if within barycentric coordinates
-                    //float Iu = glm::dot(u_fn, I);
-                    //float Iv = glm::dot(v_fn, I);   
-                    //float Il = 1 - Iu - Iv;
-                    glm::vec2 resultantBarycentric = inverseMatrix * I;
-                    float Iu = resultantBarycentric[0];
-                    float Iv = resultantBarycentric[1];
-                    float Il = 1 - Iu - Iv;
-                    
-                    raster.gotoPoint(j, i);
+                    glm::vec3 I(j, i, 1);
+                    float muI = glm::dot(mu_fcn, I);
+                    float nuI = glm::dot(nu_fcn, I);   
+                    float laI = 1.0f - muI - nuI;
+
                     // Test if pixel is in triangle
-                    if(Il >= 0 && Iu >= 0 && Iv == 0)
+                    if(laI >= 0 && muI >= 0 && nuI >= 0)
                     {
-                        float z = Il * Pdev.z + Iv * Qdev.z + Iu * Rdev.z;
+                        // Linear interpolation of barycentric coordinates
+                        float z = laI * Pdev.z + muI * Qdev.z + nuI * Rdev.z;
+                        raster.gotoPoint(j, i);
                         if(z < raster.getZ())
                         {
                             // Interpolate world normal, perspective divide
-                            glm::vec3 warpedBary(Il / PClip.w, Iu / QClip.w,Iv / RClip.w);
+                            glm::vec3 warpedBary(laI / PClip.w, muI / QClip.w, nuI / RClip.w);
                             float D = warpedBary.x + warpedBary.y + warpedBary.z;
                             warpedBary /= D;
                             
                             glm::vec4 m = warpedBary.x * mP + warpedBary.y * mQ + warpedBary.z * mR;
                             m = glm::normalize(m);
-                            glm::vec4 pos = warpedBary.x * j + warpedBary.y * i + warpedBary.z * mR;
                             
                             float mL = glm::dot(light_direction, m);
-                            glm::vec3 color = (ambient_color) + std::max(0.0f, mL) * (diffuse_coefficient) * (light_color);
+                            glm::vec3 color = ambient_color + std::max(0.0f, mL) * (diffuse_coefficient) * (light_color);
                             color *= 255.0f;
-                            //if(glm::dot(m,m) < 1e-3f)
-                              ////  color = glm::vec3(0,0,0);
-                            
+
+                            color.x = std::min(255.0f, color.x);
+                            color.y = std::min(255.0f, color.y);
+                            color.z = std::min(255.0f, color.z);
+
                             raster.setColor(color.x, color.y, color.z);
                             raster.writeZ(z);
                             raster.writePixel();
